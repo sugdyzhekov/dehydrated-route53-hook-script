@@ -1,25 +1,31 @@
 #!/bin/bash
 set -e
 
+: ${SELECTEL_TOKEN?"Need to set environment variable SELECTEL_TOKEN"};
+
 #
-# Dehydrated hook script that employs cli53 to enable dns-01 challenges with AWS Route 53
-# - Will automatically identify the correct Route 53 zone for each domain name
-# - Supports certificates with alternative names in different Route 53 zones
+# Dehydrated hook script that employs curl + http API to enable dns-01 challenges with Selectel DNS
+# - Will automatically identify the correct Selectel DNS zone for each domain name
+# - Supports certificates with alternative names in different zones
 #
-# Aaron Roydhouse <aaron@roydhouse.com>, 2016
+# Sergey Ugdyzhekov <sergey@ugdyzhekov.org>, 2017
+# https://github.com/sugdyzhekov/dehydrated-selectel-dns-hook-script
+# Based on dehydrated hook.sh which was wrote by Aaron Roydhouse <aaron@roydhouse.com>
 # https://github.com/whereisaaron/dehydrated-route53-hook-script
-# Based on dehydrated hook.sh template
 #
-# Requires dehydrated (https://github.com/lukas2511/dehydrated)
-# Requires cli53 (https://github.com/barnybug/cli53)
-# Requires bash, jq, mailx, sed, xargs
+# Requires:
+#  - dehydrated (https://github.com/lukas2511/dehydrated)
+#  - openssl
+#  - curl
+#  - bash
+#  - jq
+#  - mailx
+#  - sed
+#  - xargs
 #
-# Requires AWS credentials with access to Route53, with permissions
-# to list zones, and to create and delete records in zones.
-#
-# Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables, or
-# Create ~/.aws/credentials file with [default] credentials, or
-# Set AWS_PROFILE to name of credentials entry in ~/.aws/credentials
+# Requires Selectel DNS API token
+# https://blog.selectel.ru/upravlenie-domenami-s-selectel-dns-api/
+# Set SELECTEL_TOKEN environment variable
 #
 # Neither dehydrated nor this script needs to run as root, so don't do it!
 #
@@ -28,16 +34,21 @@ set -e
 # This hook is called once for every domain that needs to be
 # validated, including any alternative names you may have listed.
 #
-# Creates TXT record is appropriate Route53 domain, and waits for it to sync
+# Creates TXT record is appropriate domain, and waits for it to sync
 #
 deploy_challenge() {
     local DOMAIN="${1}" TOKEN_FILENAME="${2}" TOKEN_VALUE="${3}"
-
     local ZONE=$(find_zone "${DOMAIN}")
     
     if [[ -n "$ZONE" ]]; then
         echo "Creating challenge record for ${DOMAIN} in zone ${ZONE}"
-        cli53 rrcreate --replace --wait "${ZONE}" "_acme-challenge.${DOMAIN}. 60 TXT ${TOKEN_VALUE}"
+
+        local ZONE_ID=$(curl -sS -H "X-Token: ${SELECTEL_TOKEN}" https://api.selectel.ru/domains/v1/${ZONE} | jq .id)
+        local JSON='{"name": "_acme-challenge.'${DOMAIN}'", "type": "TXT", "ttl": 60, "content": "'${TOKEN_VALUE}'" }'
+
+        curl -sS -H "Content-Type: application/json" -H "X-Token: ${SELECTEL_TOKEN}" -d "${JSON}" \
+            https://api.selectel.ru/domains/v1/${ID}/records/ >/dev/null
+
     else
         echo "Could not find zone for ${DOMAIN}"
         exit 1
@@ -49,16 +60,20 @@ deploy_challenge() {
 # whether or not validation was successful. Here you can delete
 # files or DNS records that are no longer needed.
 #
-# Delete TXT record from appropriate Route53 domain, does not wait the deletion to sync
+# Delete TXT record from appropriate domain zone, does not wait the deletion to sync
 #
 clean_challenge() {
     local DOMAIN="${1}" TOKEN_FILENAME="${2}" TOKEN_VALUE="${3}"
-
     local ZONE=$(find_zone "${DOMAIN}")
     
     if [[ -n "$ZONE" ]]; then
         echo "Deleting challenge record for ${DOMAIN} from zone ${ZONE}"
-        cli53 rrdelete "${ZONE}" "_acme-challenge.${DOMAIN}." TXT
+
+        local ZONE_ID=$(curl -sS -H "X-Token: ${SELECTEL_TOKEN}" https://api.selectel.ru/domains/v1/${ZONE} | jq .id)
+        local RR_ID=$(curl -sS -H "X-Token: ${SELECTEL_TOKEN}" https://api.selectel.ru/domains/v1/${ZONE_ID}/records/ | jq '.[] | select(.name | contains("_acme-challenge.")) | .id')
+
+        curl -sS -X DELETE -H "X-Token: ${SELECTEL_TOKEN}" \
+            https://api.selectel.ru/domains/v1/${ZONE_ID}/records/${RR_ID}
     else
         echo "Could not find zone for ${DOMAIN}"
         exit 1
@@ -128,16 +143,14 @@ function get_base_name() {
 }
 
 #
-# Find the Route53 zone for this domain name
+# Find the domain zone for this domain name
 # Prefers the longest match, e.g. if creating 'a.b.foo.baa.com',
 # a 'foo.baa.com' zone will be preferred over a 'baa.com' zone
 # Returns the zone name (success) or nothing (fail)
 #
 function find_zone() {
   local DOMAIN="${1}"
-
-  local ZONELIST=$(cli53 list -format json | jq --raw-output '.[].Name' | sed -e 's/\.$//' | xargs echo -n)
-
+  local ZONELIST=$(curl -sS -H "X-Token: ${SELECTEL_TOKEN}" https://api.selectel.ru/domains/v1/ | jq .[].name | xargs echo -n)
   local TESTDOMAIN="${DOMAIN}"
 
   while [[ -n "$TESTDOMAIN" ]]; do
