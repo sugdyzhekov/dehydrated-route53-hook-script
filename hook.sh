@@ -47,7 +47,7 @@ deploy_challenge() {
         local JSON='{"name": "_acme-challenge.'${DOMAIN}'", "type": "TXT", "ttl": 60, "content": "'${TOKEN_VALUE}'" }'
 
         curl -sS -H "Content-Type: application/json" -H "X-Token: ${SELECTEL_TOKEN}" -d "${JSON}" \
-            https://api.selectel.ru/domains/v1/${ID}/records/ >/dev/null
+            https://api.selectel.ru/domains/v1/${ZONE_ID}/records/ >/dev/null
 
     else
         echo "Could not find zone for ${DOMAIN}"
