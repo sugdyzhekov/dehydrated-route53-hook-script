@@ -169,6 +169,9 @@ function find_zone() {
 function startup_hook() {
   return 0
 }
+function exit_hook() {
+  return 0
+}
 
 HANDLER="$1"; shift
 "$HANDLER" "$@"
